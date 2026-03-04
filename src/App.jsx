@@ -1,43 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
 
+function monthKeyOf(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
+function monthLabelOf(date) {
+  return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(date);
+}
+
+function daysInMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+}
+
+function firstDayOffset(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1).getDay();
+}
+
+function makeDefaultSchedule(date) {
+  const n = daysInMonth(date);
+  return Array.from({ length: n }, (_, i) => ({ day: i + 1, status: "off", label: "" }));
+}
+
 export default function App() {
-  const month = "March 2026";
+  const [activeMonthDate] = useState(() => new Date());
+  const month = monthLabelOf(activeMonthDate);
+  const monthKey = monthKeyOf(activeMonthDate);
 
-  const defaultSchedule = [
-    { day: 1, status: "off" },
-    { day: 2, status: "host", label: "CPvP Night" },
-    { day: 3, status: "off" },
-    { day: 4, status: "off" },
-    { day: 5, status: "host", label: "Mini Event" },
-    { day: 6, status: "off" },
-    { day: 7, status: "host", label: "Weekend Event" },
-    { day: 8, status: "host", label: "Weekend Event" },
-    { day: 9, status: "off" },
-    { day: 10, status: "host", label: "Queue Night" },
-    { day: 11, status: "off" },
-    { day: 12, status: "off" },
-    { day: 13, status: "host", label: "Friday Event" },
-    { day: 14, status: "host", label: "Main Event" },
-    { day: 15, status: "off" },
-    { day: 16, status: "off" },
-    { day: 17, status: "host", label: "Practice" },
-    { day: 18, status: "off" },
-    { day: 19, status: "host", label: "Scrim Night" },
-    { day: 20, status: "off" },
-    { day: 21, status: "host", label: "Saturday Event" },
-    { day: 22, status: "off" },
-    { day: 23, status: "off" },
-    { day: 24, status: "host", label: "Midweek Event" },
-    { day: 25, status: "off" },
-    { day: 26, status: "off" },
-    { day: 27, status: "host", label: "Friday Event" },
-    { day: 28, status: "host", label: "Main Event" },
-    { day: 29, status: "host", label: "Bonus Event" },
-    { day: 30, status: "off" },
-    { day: 31, status: "off" },
-  ];
-
-  const [schedule, setSchedule] = useState(defaultSchedule);
+  const [schedule, setSchedule] = useState(() => makeDefaultSchedule(activeMonthDate));
   const [isLoadingSchedule, setIsLoadingSchedule] = useState(true);
   const [isPasswordOpen, setIsPasswordOpen] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
@@ -49,40 +40,50 @@ export default function App() {
   const [saveNotice, setSaveNotice] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
-  const firstDayOffset = 0;
-  const totalCells = 35;
+  const offset = firstDayOffset(activeMonthDate);
+  const totalDays = schedule.length;
+  const totalCells = Math.ceil((offset + totalDays) / 7) * 7;
 
   useEffect(() => {
-    const loadSchedule = async () => {
+    const load = async () => {
+      setIsLoadingSchedule(true);
       try {
-        const response = await fetch("/api/schedule", { method: "GET", cache: "no-store" });
-        if (!response.ok) {
-          setIsLoadingSchedule(false);
+        const res = await fetch(`/api/schedule?month=${encodeURIComponent(monthKey)}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (!res.ok) {
+          setSchedule(makeDefaultSchedule(activeMonthDate));
           return;
         }
-        const data = await response.json();
+
+        const data = await res.json();
         if (Array.isArray(data?.schedule) && data.schedule.length) {
           setSchedule(data.schedule);
+        } else {
+          setSchedule(makeDefaultSchedule(activeMonthDate));
         }
       } catch {
+        setSchedule(makeDefaultSchedule(activeMonthDate));
       } finally {
         setIsLoadingSchedule(false);
       }
     };
-    loadSchedule();
-  }, []);
+
+    load();
+  }, [monthKey, activeMonthDate]);
 
   const hostedCount = schedule.filter((d) => d.status === "host").length;
-  const offCount = schedule.filter((d) => d.status === "off").length;
+  const offCount = schedule.filter((d) => d.status !== "host").length;
 
   const calendarCells = useMemo(() => {
-    return Array.from({ length: totalCells }, (_, index) => {
-      const dayNumber = index - firstDayOffset + 1;
+    return Array.from({ length: totalCells }, (_, i) => {
+      const dayNumber = i - offset + 1;
+      if (dayNumber < 1 || dayNumber > totalDays) return null;
       return schedule.find((d) => d.day === dayNumber) || null;
     });
-  }, [schedule]);
-
-  const selectedEntry = schedule.find((entry) => entry.day === selectedDay) || schedule[0];
+  }, [schedule, offset, totalCells, totalDays]);
 
   const openPasswordPrompt = () => {
     setIsPasswordOpen(true);
@@ -96,6 +97,12 @@ export default function App() {
     setPasswordInput("");
   };
 
+  const selectAdminDay = (day) => {
+    const entry = schedule.find((x) => x.day === day);
+    setSelectedDay(day);
+    setDraftLabel(entry?.label || "");
+  };
+
   const unlockAdmin = async () => {
     if (!passwordInput.trim()) {
       setPasswordError("Enter your admin password.");
@@ -103,24 +110,22 @@ export default function App() {
     }
 
     try {
-      const response = await fetch("/api/auth", {
+      const res = await fetch("/api/auth", {
         method: "POST",
-        headers: {
-          "x-admin-password": passwordInput,
-        },
+        headers: { "x-admin-password": passwordInput },
       });
 
-      if (response.status === 401) {
+      if (res.status === 401) {
         setPasswordError("Wrong password.");
         return;
       }
 
-      if (!response.ok) {
+      if (!res.ok) {
         setPasswordError("Auth failed.");
         return;
       }
 
-      const data = await response.json();
+      const data = await res.json();
       if (!data?.token) {
         setPasswordError("Auth failed.");
         return;
@@ -128,83 +133,69 @@ export default function App() {
 
       setAdminToken(data.token);
       setIsAdminUnlocked(true);
-      setSelectedDay(selectedEntry?.day || 1);
-      setDraftLabel(selectedEntry?.label || "");
+      selectAdminDay(1);
       closePasswordPrompt();
     } catch {
       setPasswordError("Auth failed.");
     }
   };
 
-  const persistSchedule = async (nextSchedule) => {
+  const persistSchedule = async (nextSchedule, successMessage) => {
     setSchedule(nextSchedule);
     setIsSaving(true);
 
     try {
-      const response = await fetch("/api/schedule", {
+      const res = await fetch(`/api/schedule?month=${encodeURIComponent(monthKey)}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "x-admin-token": adminToken,
         },
-        body: JSON.stringify({ month, schedule: nextSchedule }),
+        body: JSON.stringify({ month: monthKey, schedule: nextSchedule }),
       });
 
-      if (response.status === 401) {
+      if (res.status === 401) {
         setIsAdminUnlocked(false);
         setAdminToken("");
         setSaveNotice("Session expired. Re-open Admin.");
         return;
       }
 
-      if (!response.ok) {
+      if (!res.ok) {
         setSaveNotice("Save failed.");
         return;
       }
 
-      setSaveNotice("Schedule updated.");
+      setSaveNotice(successMessage);
     } catch {
       setSaveNotice("Save failed.");
     } finally {
       setIsSaving(false);
-      setTimeout(() => setSaveNotice(""), 1800);
+      window.setTimeout(() => setSaveNotice(""), 1800);
     }
   };
 
   const updateDayStatus = async (newStatus) => {
-    const nextSchedule = schedule.map((entry) =>
-      entry.day === selectedDay
-        ? {
-            ...entry,
-            status: newStatus,
-            label: newStatus === "host" ? entry.label || draftLabel || "Event Night" : "",
-          }
-        : entry
+    const next = schedule.map((e) =>
+      e.day === selectedDay
+        ? { ...e, status: newStatus, label: newStatus === "host" ? e.label || draftLabel || "Event Night" : "" }
+        : e
     );
-
-    await persistSchedule(nextSchedule);
+    await persistSchedule(next, "Saved.");
   };
 
   const saveDayLabel = async () => {
-    const nextSchedule = schedule.map((entry) =>
-      entry.day === selectedDay
-        ? { ...entry, label: entry.status === "host" ? draftLabel : "" }
-        : entry
+    const next = schedule.map((e) =>
+      e.day === selectedDay ? { ...e, label: e.status === "host" ? draftLabel : "" } : e
     );
-
-    await persistSchedule(nextSchedule);
+    await persistSchedule(next, "Saved.");
   };
 
   const resetSchedule = async () => {
+    const next = makeDefaultSchedule(activeMonthDate);
     setSelectedDay(1);
     setDraftLabel("");
-    await persistSchedule(defaultSchedule);
-  };
-
-  const selectAdminDay = (day) => {
-    const entry = schedule.find((item) => item.day === day);
-    setSelectedDay(day);
-    setDraftLabel(entry?.label || "");
+    await persistSchedule(next, "Month reset.");
   };
 
   return (
@@ -227,14 +218,14 @@ export default function App() {
       <main>
         <section className="relative overflow-hidden border-b border-[#8edcff]/15">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(22,183,255,0.32),transparent_42%)]" />
-          <div className="relative mx-auto grid min-h-[78vh] max-w-6xl place-items-center px-6 py-20 text-center">
+          <div className="relative mx-auto grid min-h-[64vh] max-w-6xl place-items-center px-6 py-20 text-center">
             <div>
               <p className="mb-4 text-sm uppercase tracking-[0.4em] text-white/60">Minecraft CPvP Events</p>
               <h1 className="text-5xl font-black tracking-[0.3em] drop-shadow-[0_0_18px_rgba(141,220,255,0.35)] sm:text-7xl">
                 WESTEVENTS
               </h1>
               <p className="mx-auto mt-5 max-w-2xl text-base text-white/75 sm:text-lg">
-                Stay up to date with when we host, when we take breaks, and what the month looks like at a glance.
+                Scan quickly for hosted days (bright tiles) and see what&apos;s coming up.
               </p>
 
               <div className="mt-10 grid gap-4 sm:grid-cols-3">
@@ -248,7 +239,7 @@ export default function App() {
                 </div>
                 <div className="rounded-2xl border border-[#8edcff]/20 bg-[#061a3a]/30 p-5 shadow-2xl">
                   <div className="text-2xl font-bold">{month}</div>
-                  <div className="mt-1 text-sm text-white/60">Current Schedule</div>
+                  <div className="mt-1 text-sm text-white/60">Current Month</div>
                 </div>
               </div>
             </div>
@@ -263,38 +254,52 @@ export default function App() {
                 <h2 className="mt-2 text-3xl font-bold">{month}</h2>
               </div>
               <div className="flex items-center gap-4 text-sm text-white/75">
-                <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-[#16b7ff]" /> Hosting</span>
-                <span className="flex items-center gap-2"><span className="h-3 w-3 rounded-full bg-[#dff5ff]/30" /> Off</span>
+                <span className="flex items-center gap-2">
+                  <span className="h-3 w-3 rounded-full bg-white" /> Hosting
+                </span>
+                <span className="flex items-center gap-2">
+                  <span className="h-3 w-3 rounded-full bg-white/25" /> Off
+                </span>
               </div>
             </div>
 
             <div className="overflow-hidden rounded-3xl border border-[#8edcff]/20 bg-[#061a3a]/35 shadow-2xl">
               <div className="grid grid-cols-7 border-b border-[#8edcff]/15 text-center text-xs font-semibold uppercase tracking-[0.2em] text-[#dff5ff]/60 sm:text-sm">
-                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-                  <div key={day} className="px-2 py-4">{day}</div>
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => (
+                  <div key={d} className="px-2 py-4">
+                    {d}
+                  </div>
                 ))}
               </div>
 
               <div className="grid grid-cols-7">
                 {calendarCells.map((entry, index) => {
                   const isHost = entry?.status === "host";
+                  const tile = entry
+                    ? isHost
+                      ? "bg-white/20 hover:bg-white/25 border-white/25 shadow-[0_0_22px_rgba(255,255,255,0.10)]"
+                      : "bg-white/[0.03] border-[#8edcff]/12"
+                    : "bg-transparent border-transparent";
+
                   return (
                     <button
                       key={index}
                       type="button"
                       onClick={() => entry && isAdminUnlocked && selectAdminDay(entry.day)}
-                      className={`min-h-[110px] border-b border-r border-[#8edcff]/12 p-2 text-left transition sm:min-h-[135px] sm:p-3 ${
-                        entry ? (isHost ? "bg-[#16b7ff]/12" : "bg-[#dff5ff]/[0.03]") : "bg-transparent"
-                      } ${entry && isAdminUnlocked ? "cursor-pointer hover:bg-[#8edcff]/10" : "cursor-default"}`}
+                      className={`min-h-[110px] border-b border-r p-2 text-left transition sm:min-h-[135px] sm:p-3 ${tile} ${
+                        entry && isAdminUnlocked ? "cursor-pointer" : "cursor-default"
+                      }`}
                     >
                       {entry && (
                         <>
                           <div className="flex items-center justify-between">
-                            <span className="text-sm font-bold sm:text-base">{entry.day}</span>
-                            <span className={`h-2.5 w-2.5 rounded-full ${isHost ? "bg-[#16b7ff]" : "bg-[#dff5ff]/30"}`} />
+                            <span className={`text-sm font-bold sm:text-base ${isHost ? "text-white" : "text-white/85"}`}>
+                              {entry.day}
+                            </span>
+                            <span className={`h-2.5 w-2.5 rounded-full ${isHost ? "bg-white" : "bg-white/25"}`} />
                           </div>
-                          <div className="mt-3 text-xs leading-5 text-white/75 sm:text-sm">
-                            {isHost ? entry.label : "No hosting"}
+                          <div className={`mt-3 text-xs leading-5 sm:text-sm ${isHost ? "text-white" : "text-white/65"}`}>
+                            {isHost ? entry.label || "Hosting" : "No hosting"}
                           </div>
                         </>
                       )}
@@ -304,9 +309,7 @@ export default function App() {
               </div>
             </div>
 
-            {isLoadingSchedule && (
-              <p className="mt-4 text-sm text-white/60">Loading live schedule...</p>
-            )}
+            {isLoadingSchedule && <p className="mt-4 text-sm text-white/60">Loading live schedule...</p>}
           </div>
         </section>
       </main>
@@ -365,7 +368,7 @@ export default function App() {
           </div>
 
           <div className="mt-3 flex items-center justify-between gap-3">
-            <p className="text-xs text-white/55">{saveNotice || (isSaving ? "Saving..." : "Edits save via secure admin token.")}</p>
+            <p className="text-xs text-white/55">{saveNotice || (isSaving ? "Saving..." : `Month: ${monthKey}`)}</p>
             <button
               type="button"
               onClick={resetSchedule}
@@ -377,18 +380,18 @@ export default function App() {
           </div>
 
           <div className="mt-4 grid grid-cols-7 gap-2">
-            {schedule.map((entry) => (
+            {schedule.map((e) => (
               <button
-                key={entry.day}
+                key={e.day}
                 type="button"
-                onClick={() => selectAdminDay(entry.day)}
+                onClick={() => selectAdminDay(e.day)}
                 className={`rounded-xl border px-2 py-2 text-sm font-semibold transition hover:scale-[1.03] active:scale-[0.98] ${
-                  selectedDay === entry.day
+                  selectedDay === e.day
                     ? "border-[#8edcff]/45 bg-[#16b7ff]/15 text-white shadow-[0_0_18px_rgba(22,183,255,0.15)]"
                     : "border-[#8edcff]/18 bg-white/[0.04] text-white/80 hover:bg-[#8edcff]/10 hover:border-[#8edcff]/35"
                 }`}
               >
-                {entry.day}
+                {e.day}
               </button>
             ))}
           </div>
