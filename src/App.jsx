@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
-export default function WestEventsHomePage() {
+export default function App() {
   const month = "March 2026";
-  const DEMO_ADMIN_PASSWORD = "WEST_EVENTS$2026";
 
   const defaultSchedule = [
     { day: 1, status: "off" },
@@ -44,6 +43,7 @@ export default function WestEventsHomePage() {
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState("");
   const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
   const [selectedDay, setSelectedDay] = useState(1);
   const [draftLabel, setDraftLabel] = useState("");
   const [saveNotice, setSaveNotice] = useState("");
@@ -55,30 +55,20 @@ export default function WestEventsHomePage() {
   useEffect(() => {
     const loadSchedule = async () => {
       try {
-        const response = await fetch("/api/schedule", {
-          method: "GET",
-          cache: "no-store",
-        });
-
+        const response = await fetch("/api/schedule", { method: "GET", cache: "no-store" });
         if (!response.ok) {
-          setSaveNotice("Using default schedule until backend is connected.");
           setIsLoadingSchedule(false);
           return;
         }
-
         const data = await response.json();
         if (Array.isArray(data?.schedule) && data.schedule.length) {
           setSchedule(data.schedule);
-          setSaveNotice("Live shared schedule loaded.");
         }
       } catch {
-        setSaveNotice("Using default schedule until backend is connected.");
       } finally {
         setIsLoadingSchedule(false);
-        window.setTimeout(() => setSaveNotice(""), 2000);
       }
     };
-
     loadSchedule();
   }, []);
 
@@ -106,30 +96,47 @@ export default function WestEventsHomePage() {
     setPasswordInput("");
   };
 
-  const unlockAdmin = () => {
+  const unlockAdmin = async () => {
     if (!passwordInput.trim()) {
       setPasswordError("Enter your admin password.");
       return;
     }
 
-    if (passwordInput !== DEMO_ADMIN_PASSWORD) {
-      setPasswordError("Wrong password.");
-      return;
+    try {
+      const response = await fetch("/api/auth", {
+        method: "POST",
+        headers: {
+          "x-admin-password": passwordInput,
+        },
+      });
+
+      if (response.status === 401) {
+        setPasswordError("Wrong password.");
+        return;
+      }
+
+      if (!response.ok) {
+        setPasswordError("Auth failed.");
+        return;
+      }
+
+      const data = await response.json();
+      if (!data?.token) {
+        setPasswordError("Auth failed.");
+        return;
+      }
+
+      setAdminToken(data.token);
+      setIsAdminUnlocked(true);
+      setSelectedDay(selectedEntry?.day || 1);
+      setDraftLabel(selectedEntry?.label || "");
+      closePasswordPrompt();
+    } catch {
+      setPasswordError("Auth failed.");
     }
-
-    setIsAdminUnlocked(true);
-    setSelectedDay(selectedEntry?.day || 1);
-    setDraftLabel(selectedEntry?.label || "");
-    closePasswordPrompt();
   };
 
-  const flashNotice = (message) => {
-    setSaveNotice(message);
-    window.clearTimeout(flashNotice._timer);
-    flashNotice._timer = window.setTimeout(() => setSaveNotice(""), 1800);
-  };
-
-  const persistSchedule = async (nextSchedule, successMessage) => {
+  const persistSchedule = async (nextSchedule) => {
     setSchedule(nextSchedule);
     setIsSaving(true);
 
@@ -138,20 +145,29 @@ export default function WestEventsHomePage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "x-admin-token": adminToken,
         },
         body: JSON.stringify({ month, schedule: nextSchedule }),
       });
 
-      if (!response.ok) {
-        flashNotice("Save failed. Backend not connected yet.");
+      if (response.status === 401) {
+        setIsAdminUnlocked(false);
+        setAdminToken("");
+        setSaveNotice("Session expired. Re-open Admin.");
         return;
       }
 
-      flashNotice(successMessage);
+      if (!response.ok) {
+        setSaveNotice("Save failed.");
+        return;
+      }
+
+      setSaveNotice("Schedule updated.");
     } catch {
-      flashNotice("Save failed. Backend not connected yet.");
+      setSaveNotice("Save failed.");
     } finally {
       setIsSaving(false);
+      setTimeout(() => setSaveNotice(""), 1800);
     }
   };
 
@@ -166,26 +182,23 @@ export default function WestEventsHomePage() {
         : entry
     );
 
-    await persistSchedule(nextSchedule, "Shared schedule updated.");
+    await persistSchedule(nextSchedule);
   };
 
   const saveDayLabel = async () => {
     const nextSchedule = schedule.map((entry) =>
       entry.day === selectedDay
-        ? {
-            ...entry,
-            label: entry.status === "host" ? draftLabel : "",
-          }
+        ? { ...entry, label: entry.status === "host" ? draftLabel : "" }
         : entry
     );
 
-    await persistSchedule(nextSchedule, "Event label saved.");
+    await persistSchedule(nextSchedule);
   };
 
   const resetSchedule = async () => {
     setSelectedDay(1);
     setDraftLabel("");
-    await persistSchedule(defaultSchedule, "Month reset.");
+    await persistSchedule(defaultSchedule);
   };
 
   const selectAdminDay = (day) => {
@@ -201,20 +214,13 @@ export default function WestEventsHomePage() {
           <div className="text-xl font-bold tracking-[0.25em] drop-shadow-[0_0_14px_rgba(141,220,255,0.35)]">
             WESTEVENTS
           </div>
-          <div className="flex items-center gap-4">
-            <nav className="hidden items-center gap-6 text-sm text-white/80 md:flex">
-              <a href="#about" className="transition hover:text-white">About</a>
-              <a href="#calendar" className="transition hover:text-white">Calendar</a>
-              <a href="#status" className="transition hover:text-white">Status</a>
-            </nav>
-            <button
-              type="button"
-              onClick={openPasswordPrompt}
-              className="rounded-2xl border border-[#8edcff]/25 bg-white/[0.05] px-4 py-2 text-sm font-semibold text-white/90 transition hover:scale-[1.02] hover:bg-[#8edcff]/10 hover:border-[#8edcff]/40 active:scale-[0.98]"
-            >
-              Admin
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={openPasswordPrompt}
+            className="rounded-2xl border border-[#8edcff]/25 bg-white/[0.05] px-4 py-2 text-sm font-semibold text-white/90 transition hover:scale-[1.02] hover:bg-[#8edcff]/10 hover:border-[#8edcff]/40 active:scale-[0.98]"
+          >
+            Admin
+          </button>
         </div>
       </header>
 
@@ -231,21 +237,6 @@ export default function WestEventsHomePage() {
                 Stay up to date with when we host, when we take breaks, and what the month looks like at a glance.
               </p>
 
-              <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-                <a
-                  href="#calendar"
-                  className="rounded-2xl border border-[#8edcff]/35 bg-[#dff5ff] px-6 py-3 text-sm font-semibold text-[#061a3a] transition hover:scale-[1.02]"
-                >
-                  View This Month
-                </a>
-                <a
-                  href="#about"
-                  className="rounded-2xl border border-[#8edcff]/30 bg-[#061a3a]/20 px-6 py-3 text-sm font-semibold text-white/90 transition hover:bg-[#8edcff]/10"
-                >
-                  Learn More
-                </a>
-              </div>
-
               <div className="mt-10 grid gap-4 sm:grid-cols-3">
                 <div className="rounded-2xl border border-[#8edcff]/20 bg-[#061a3a]/30 p-5 shadow-2xl">
                   <div className="text-2xl font-bold">{hostedCount}</div>
@@ -258,46 +249,6 @@ export default function WestEventsHomePage() {
                 <div className="rounded-2xl border border-[#8edcff]/20 bg-[#061a3a]/30 p-5 shadow-2xl">
                   <div className="text-2xl font-bold">{month}</div>
                   <div className="mt-1 text-sm text-white/60">Current Schedule</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section id="about" className="mx-auto max-w-6xl px-6 py-20">
-          <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-            <div className="rounded-3xl border border-[#8edcff]/20 bg-[#061a3a]/30 p-8 shadow-2xl">
-              <p className="mb-3 text-sm uppercase tracking-[0.3em] text-white/50">About</p>
-              <h2 className="text-3xl font-bold">How WestEvents works</h2>
-              <p className="mt-4 leading-7 text-white/75">
-                WestEvents is an NA-W hosted Minecraft server where the event host picks a setup, then players are dropped into a large 5-biome map and the fighting begins.
-                As the match progresses, the border slowly closes and each completed border destination triggers the next drop, repeating until the fourth drop reaches bedrock.
-              </p>
-              <p className="mt-4 leading-7 text-white/75">
-                After the final close, the remaining players fight until one winner is left.
-                During endgame, the bedrock clears and resets every 60 seconds unless an event host force-resets it sooner to speed up fights or stop stalling.
-              </p>
-            </div>
-
-            <div id="status" className="rounded-3xl border border-[#8edcff]/20 bg-[#061a3a]/30 p-8 shadow-2xl">
-              <p className="mb-3 text-sm uppercase tracking-[0.3em] text-white/50">Status Key</p>
-              <div className="space-y-4">
-                <div className="flex items-center gap-3 rounded-2xl border border-[#8edcff]/20 bg-[#061a3a]/25 p-4">
-                  <div className="h-4 w-4 rounded-full bg-[#16b7ff]" />
-                  <div>
-                    <div className="font-semibold">Hosting</div>
-                    <div className="text-sm text-white/60">An event or activity is scheduled.</div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-3 rounded-2xl border border-[#8edcff]/20 bg-[#061a3a]/25 p-4">
-                  <div className="h-4 w-4 rounded-full bg-[#dff5ff]/30" />
-                  <div>
-                    <div className="font-semibold">Off Day</div>
-                    <div className="text-sm text-white/60">No official hosting planned.</div>
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-[#8edcff]/20 bg-[#061a3a]/25 p-4 text-sm leading-7 text-white/70">
-                  You can purchase an Event @ our discord: https://discord.gg/RZsjQyRcFr
                 </div>
               </div>
             </div>
@@ -403,7 +354,10 @@ export default function WestEventsHomePage() {
             </div>
             <button
               type="button"
-              onClick={() => setIsAdminUnlocked(false)}
+              onClick={() => {
+                setIsAdminUnlocked(false);
+                setAdminToken("");
+              }}
               className="rounded-xl border border-[#8edcff]/25 bg-white/[0.04] px-3 py-1.5 text-sm font-semibold text-white/90 transition hover:bg-[#8edcff]/10 hover:border-[#8edcff]/40 active:scale-[0.98]"
             >
               Close
@@ -411,7 +365,7 @@ export default function WestEventsHomePage() {
           </div>
 
           <div className="mt-3 flex items-center justify-between gap-3">
-            <p className="text-xs text-white/55">{saveNotice || (isSaving ? "Saving..." : "Edits save to the shared schedule API.")}</p>
+            <p className="text-xs text-white/55">{saveNotice || (isSaving ? "Saving..." : "Edits save via secure admin token.")}</p>
             <button
               type="button"
               onClick={resetSchedule}
